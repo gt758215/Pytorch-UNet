@@ -52,7 +52,8 @@ def train_net(net,
     ''')
 
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8)
-    if net.n_classes > 1:
+
+    if (device.type == 'cuda' and  net.module.n_classes > 1) or (device.type == 'cpu' and  net.n_classes > 1):
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.BCEWithLogitsLoss()
@@ -65,13 +66,19 @@ def train_net(net,
             for batch in train_loader:
                 imgs = batch['image']
                 true_masks = batch['mask']
-                assert imgs.shape[1] == net.n_channels, \
-                    f'Network has been defined with {net.n_channels} input channels, ' \
-                    f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+                assert (device.type == 'cuda' and imgs.shape[1] == net.module.n_channels) or \
+                       (device.type == 'cpu' and imgs.shape[1] == net.n_channels), \
+                        f'Network has been defined with {net.n_channels} input channels, ' \
+                        f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
+                        'the images are loaded correctly.'
 
                 imgs = imgs.to(device=device, dtype=torch.float32)
-                mask_type = torch.float32 if net.n_classes == 1 else torch.long
+
+                if (device.type == 'cpu' and net.n_classes == 1) or (device.type == 'cuda' and net.module.n_classes == 1):
+                    mask_type = torch.float32
+                else:
+                    mask_type = torch.long
+
                 true_masks = true_masks.to(device=device, dtype=mask_type)
 
                 masks_pred = net(imgs)
@@ -89,7 +96,7 @@ def train_net(net,
                 global_step += 1
                 if global_step % (len(dataset) // (10 * batch_size)) == 0:
                     val_score = eval_net(net, val_loader, device, n_val)
-                    if net.n_classes > 1:
+                    if (device.type == 'cpu' and net.n_classes > 1) or (device.type == 'cuda' and net.module.n_classes > 1):
                         logging.info('Validation cross entropy: {}'.format(val_score))
                         writer.add_scalar('Loss/test', val_score, global_step)
 
@@ -98,7 +105,7 @@ def train_net(net,
                         writer.add_scalar('Dice/test', val_score, global_step)
 
                     writer.add_images('images', imgs, global_step)
-                    if net.n_classes == 1:
+                    if (device.type == 'cpu' and net.n_classes == 1) or (device.type == 'cuda' and net.module.n_classes == 1):
                         writer.add_images('masks/true', true_masks, global_step)
                         writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
 
@@ -147,6 +154,9 @@ if __name__ == '__main__':
     #   - For 2 classes, use n_classes=1
     #   - For N > 2 classes, use n_classes=N
     net = UNet(n_channels=3, n_classes=1)
+    if device.type == 'cuda':
+        net = net.cuda()
+
     logging.info(f'Network:\n'
                  f'\t{net.n_channels} input channels\n'
                  f'\t{net.n_classes} output channels (classes)\n'
@@ -157,6 +167,9 @@ if __name__ == '__main__':
             torch.load(args.load, map_location=device)
         )
         logging.info(f'Model loaded from {args.load}')
+
+    if device.type == 'cuda':
+        net=nn.DataParallel(net)
 
     net.to(device=device)
     # faster convolutions, but more memory
